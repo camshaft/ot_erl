@@ -1,62 +1,191 @@
 -module (ot_json).
 
-% -export ([
-%   name/0,
-%   create/0,
-%   invert/1
-% ]).
+-export ([
+  name/0,
+  create/0,
+  invert_component/1,
+  invert/1,
+  check_list/1,
+  check_obj/1,
+  apply/2
+]).
 
-% name()->
-%   json.
+-ifdef (TEST).
+-compile(export_all).
+-endif.
 
-% create()->
-%   null.
+name()->
+  json.
 
-% invert([Op|Rest])->
-%   lists:append([invert_component(Op)], invert(Rest));
-% invert([])->
-%   [].
+create()->
+  null.
 
-% invert_component(Component)->
-%   NewComponent = [{p, proplist:get_value(p, Component)}],
-%   InverseProps = [{si, sd}, {sd, si}, {oi, od}, {od, oi}, {li, ld}, {ld, li}, na, lm],
-%   invert_component_props(Component, NewComponent, InverseProps).
-% invert_component_props(Component, NewComponent, [])->
-%   NewComponent;
-% invert_component_props(Component, NewComponent, [{Prop, InverseProp}|Rest])->
-%   ModdedComponent = case proplist:is_defined(Prop, Component) of
-%     true ->
-%       lists:append([{InverseProp, proplist:get_value(Prop, Component)}],NewComponent);
-%     _ ->
-%       NewComponent
-%   end,
-%   invert_component_props(Component, ModdedComponent, Rest);
-% invert_component_props(Component, NewComponent, [na|Rest])->
-%   ModdedComponent = case proplist:is_defined(na, Component) of
-%     true ->
-%       lists:append([{na, -proplist:get_value(na, Component)}],NewComponent);
-%     _ ->
-%       NewComponent
-%   end,
-%   invert_component_props(Component, ModdedComponent, Rest);
-% invert_component_props(Component, NewComponent, [lm|Rest])->
-%   ModdedComponent = case proplist:is_defined(lm, Component) of
-%     true ->
-%       %% TODO not sure what he's doing here
-%       Path = proplist:get_value(p, Component),
-%       Lm = lists:last(Path),
-%       P = lists:seq(0, length(Path)-1),
-%       lists:append([{lm, Path}],NewComponent);
-%     _ ->
-%       NewComponent
-%   end,
-%   invert_component_props(Component, ModdedComponent, Rest).
+invert_component({Component})->
+  Path = proplists:get_value(<<"p">>, Component, []),
+  InvertedComponent = invert_component(Path, Component, []),
+  {InvertedComponent}.
 
-% check_valid_op(Op)->
-%   true.
+invert_component(Path, [], Inverted)->
+  case proplists:is_defined(<<"p">>, Inverted) of
+    true ->
+      Inverted;
+    false ->
+      Inverted++[<<"p">>, Path]
+  end;
+invert_component(Path, [{<<"p">>, Path}|OtherProperties], Inverted)->
+  %% Do Nothing
+  invert_component(Path, OtherProperties, Inverted);
+invert_component(Path, [{<<"si">>, Value}|OtherProperties], Inverted)->
+  invert_component(Path, OtherProperties, Inverted++[{<<"sd">>, Value}]);
+invert_component(Path, [{<<"sd">>, Value}|OtherProperties], Inverted)->
+  invert_component(Path, OtherProperties, Inverted++[{<<"si">>, Value}]);
+invert_component(Path, [{<<"oi">>, Value}|OtherProperties], Inverted)->
+  invert_component(Path, OtherProperties, Inverted++[{<<"od">>, Value}]);
+invert_component(Path, [{<<"od">>, Value}|OtherProperties], Inverted)->
+  invert_component(Path, OtherProperties, Inverted++[{<<"oi">>, Value}]);
+invert_component(Path, [{<<"li">>, Value}|OtherProperties], Inverted)->
+  invert_component(Path, OtherProperties, Inverted++[{<<"ld">>, Value}]);
+invert_component(Path, [{<<"ld">>, Value}|OtherProperties], Inverted)->
+  invert_component(Path, OtherProperties, Inverted++[{<<"li">>, Value}]);
+invert_component(Path, [{<<"na">>, Value}|OtherProperties], Inverted)->
+  invert_component(Path, OtherProperties, Inverted++[{<<"na">>, -Value}]);
+invert_component(Path, [{<<"lm">>, Value}|OtherProperties], Inverted)->
+  Lm = lists:nth(length(Path), Path),
+  invert_component(Path, OtherProperties, Inverted++[{<<"lm">>, Lm},{<<"p">>, Path++[Value]}]).
 
-% apply(Snapshot, Op)->
-%   case check_valid_op(Op) of
-%     true->
+invert(Operation)->
+  invert(Operation, []).
 
-%   end
+invert([], InvertedComponents)->
+  InvertedComponents;
+invert([Component|OtherComponents], InvertedComponents)->
+  invert(OtherComponents, InvertedComponents++[invert_component(Component)]).
+
+check_valid_op(_Op)->
+  true.
+
+check_list(Elem)->
+  case is_list(Elem) of
+    true ->
+      true;
+    false ->
+      throw({error, {elem_not_a_list, Elem}})
+  end.
+
+check_obj(Elem)->
+  case is_tuple(Elem) of
+    true ->
+      true;
+    false ->
+      throw({error, {elem_not_a_obj, Elem}})
+  end.
+
+apply(Snapshot, Operation)->
+  try check_valid_op(Operation) of
+    _ ->
+      apply_components(Snapshot, Operation)
+  catch
+    Error ->
+      Error
+  end.
+
+apply_components(Snapshot, [])->
+  Snapshot;
+apply_components(Snapshot, [{Component}|OtherComponents])->
+  Path = proplists:get_value(<<"p">>, Component),
+  case apply_component(find_elem(Path, Snapshot), Component) of
+    {error, Error} ->
+      throw({error, Error});
+    NewElem ->
+      NewSnapshot = put_elem(Path, NewElem, Snapshot),
+      apply_components(NewSnapshot, OtherComponents)
+  end.
+
+apply_component(undefined, Component)->
+  Path = proplists:get_value(<<"p">>, Component),
+  {error, {invalid_path, Path}};
+apply_component({Key, Elem}, [{<<"na">>, OpValue}|_Rest])->
+  Value = get_value(Key, Elem),
+  case is_number(Value) of
+    true ->
+      set_value(Key, Value+OpValue, Elem);
+    false ->
+      {error, badtype}
+  end;
+apply_component({Key, Elem}, [{<<"si">>, OpValue}|_Rest]) when is_binary(OpValue), is_binary(Elem)->
+  FirstPart = binary:part(Elem, {0, Key}),
+  SecondPart = binary:part(Elem, {Key, byte_size(Elem)-Key}),
+  <<FirstPart/binary, OpValue/binary, SecondPart/binary>>;
+apply_component({Key, Elem}, [{<<"sd">>, OpValue}|_Rest]) when is_binary(OpValue), is_binary(Elem)->
+  %% Make sure the values match
+  OpValue = binary:part(Elem, {Key, byte_size(OpValue)}),
+  FirstPart = binary:part(Elem, {0, Key}),
+  SecondPart = binary:part(Elem, {Key+byte_size(OpValue), byte_size(Elem)-Key-byte_size(OpValue)}),
+  <<FirstPart/binary, SecondPart/binary>>;
+apply_component({Key, Elem}, [{<<"li">>, OpValue}|Rest])->
+  check_list(Elem),
+  case proplists:get_value(<<"ld">>, Rest) of
+    undefined ->
+      {List1, List2} = lists:split(Key, Elem),
+      List1++[OpValue]++List2;
+    DeleteValue ->
+      %% Make sure the values match
+      DeleteValue = get_value(Key, Elem),
+      set_value(Key, OpValue, Elem)
+  end;
+apply_component({Key, Elem}, [{<<"ld">>, OpValue}|Rest])->
+  check_list(Elem),
+  case proplists:get_value(<<"li">>, Rest) of
+    undefined ->
+      OpValue = get_value(Key, Elem),
+      {List1, List2} = lists:split(Key, Elem),
+      List1++tl(List2);
+    DeleteValue ->
+      %% Make sure the values match
+      DeleteValue = get_value(Key, Elem),
+      set_value(Key, OpValue, Elem)
+  end;
+apply_component({Key, Elem}, [{<<"oi">>, OpValue}|_Rest])->
+  check_obj(Elem),
+  set_value(Key, OpValue, Elem);
+apply_component({Key, {Elem}}, [{<<"od">>, OpValue}|_Rest])->
+  check_obj({Elem}),
+  OpValue = get_value(Key, {Elem}),
+  {proplists:delete(Key, Elem)};
+apply_component(Value, [{<<"p">>, _}|Rest])->
+  apply_component(Value, Rest);
+apply_component(_, [_Component|_Rest]) ->
+  {error, invalid_component}.
+
+%% Helpers
+find_elem([Path|[]], Elem)->
+  {Path, Elem};
+find_elem(_, undefined)->
+  undefined;
+find_elem([Path|Rest], Elem) ->
+  find_elem(Rest, get_value(Path, Elem));
+find_elem([], _)->
+  undefined.
+
+put_elem([Key|[]], Elem, Snapshot)->
+  set_value(Key, Elem, Snapshot);
+put_elem([Key|Rest], Elem, Snapshot) when is_number(hd(Rest)), length(Rest) == 1->
+  set_value(Key, Elem, Snapshot);
+put_elem([Key|Rest], Elem, Snapshot)->
+  set_value(Key, put_elem(Rest, Elem, get_value(Key, Snapshot)), Snapshot).
+
+get_value(Key, Elem) when is_list(Elem), is_number(Key) ->
+  lists:nth(Key+1, Elem);
+get_value(Key, {Elem}) when is_list(Elem) ->
+  proplists:get_value(Key, Elem);
+get_value(_, _)->
+  undefined.
+
+set_value(Key, Value, Elem) when is_number(Key), is_list(Elem) ->
+  {List1, List2} = lists:split(Key, Elem),
+  List1++[Value]++tl(List2);
+set_value(Key, Value, {Elem}) when is_list(Elem) ->
+  List1 = proplists:delete(Key, Elem),
+  {List1++[{Key, Value}]};
+set_value(_, _, _)->
+  throw({error, badarg}).
