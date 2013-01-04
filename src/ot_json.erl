@@ -145,6 +145,9 @@ apply_component({Key, Elem}, [{<<"ld">>, OpValue}|Rest])->
       DeleteValue = get_value(Key, Elem),
       set_value(Key, OpValue, Elem)
   end;
+% TODO
+% apply_component({Key, Elem}, [{<<"lm">>, OpValue}|_Rest])->
+%   undefined;
 apply_component({Key, Elem}, [{<<"oi">>, OpValue}|_Rest])->
   check_obj(Elem),
   set_value(Key, OpValue, Elem);
